@@ -1,5 +1,11 @@
 [
   {
+    "timestamp": "2025-07-22T00:47:00.000Z",
+    "sessionId": "vachit",
+    "type": "snapshot",
+    "summary": "Shipped complete Vachit fullstack app: Go+ClickHouse backend, Preact frontend, chess engine, WebRTC, 22 tests passing."
+  },
+  {
     "timestamp": "2026-07-21T18:45:00.000Z",
     "sessionId": "init",
     "type": "snapshot",

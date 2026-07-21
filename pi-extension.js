@@ -35,39 +35,26 @@ function saveIndex(entries) {
   fs.writeFileSync(INDEX_FILE, JSON.stringify(entries, null, 2));
 }
 
-const LAST_PUSH_FILE = path.join(MEMORY_DIR, ".last_push");
-const PUSH_INTERVAL = 24 * 60 * 60 * 1000; // 24 hours
-
-function shouldPush() {
-  try {
-    if (fs.existsSync(LAST_PUSH_FILE)) {
-      const lastPush = parseInt(fs.readFileSync(LAST_PUSH_FILE, "utf8"));
-      return Date.now() - lastPush >= PUSH_INTERVAL;
-    }
-  } catch {}
-  return true; // No record, push now
-}
-
-function markPushed() {
-  ensureDir();
-  fs.writeFileSync(LAST_PUSH_FILE, String(Date.now()));
-}
-
 function gitSync() {
-  if (!shouldPush()) return;
+  // Only push if this is a real git repo with a remote
+  try {
+    execSync("git rev-parse --git-dir", { cwd: MEMORY_REPO, stdio: "pipe" });
+    execSync("git remote get-url origin", { cwd: MEMORY_REPO, stdio: "pipe" });
+  } catch {
+    return; // No git repo or no remote
+  }
   try {
     const cwd = MEMORY_REPO;
     execSync("git pull --rebase origin main", { cwd, stdio: "pipe", timeout: 10000 });
     execSync("git add -A", { cwd, stdio: "pipe" });
     const diff = execSync("git diff --staged --stat", { cwd, stdio: "pipe", encoding: "utf8" });
-    if (!diff.trim()) return; // No changes
-    execSync(`git commit -m "memory: auto-sync ${new Date().toISOString()}"`, {
+    if (!diff.trim()) return;
+    execSync(`git commit -m "memory: ${new Date().toISOString()}"`, {
       cwd, stdio: "pipe",
     });
     execSync("git push origin main", { cwd, stdio: "pipe", timeout: 15000 });
-    markPushed();
-  } catch (e) {
-    // Silently skip if no changes or network issues
+  } catch {
+    // Silent skip
   }
 }
 
