@@ -1,2 +1,3 @@
 memory/*.json
+!memory/_index.json
 node_modules/

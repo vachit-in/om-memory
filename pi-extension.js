@@ -1,102 +1,246 @@
-// Pi extension: auto-push memory on compaction
-// Install: add to ~/.pi/agent/extensions/ or .pi/extensions/
+// om-memory Pi Extension
+// Pi agent treats this repo as its memory home.
+// - Loads past context at session start
+// - Saves on compaction
+// - Reads/writes only from ~/om-memory
 
 const fs = require("fs");
 const path = require("path");
 const { execSync } = require("child_process");
 
-const MEMORY_REPO = path.join(require("os").homedir(), "om-memory");
+const HOME = require("os").homedir();
+const MEMORY_REPO = path.join(HOME, "om-memory");
 const MEMORY_DIR = path.join(MEMORY_REPO, "memory");
+const INDEX_FILE = path.join(MEMORY_DIR, "_index.json");
 
-function ensureRepo() {
+// ─── Repo helpers ──────────────────────────────────────────────────────────
+
+function ensureDir() {
   if (!fs.existsSync(MEMORY_DIR)) {
     fs.mkdirSync(MEMORY_DIR, { recursive: true });
   }
 }
 
-function gitPush(filePath, sessionId) {
+function loadIndex() {
+  try {
+    if (fs.existsSync(INDEX_FILE)) {
+      return JSON.parse(fs.readFileSync(INDEX_FILE, "utf8"));
+    }
+  } catch {}
+  return [];
+}
+
+function saveIndex(entries) {
+  ensureDir();
+  fs.writeFileSync(INDEX_FILE, JSON.stringify(entries, null, 2));
+}
+
+function gitSync() {
   try {
     const cwd = MEMORY_REPO;
-    execSync("git pull --rebase origin main", { cwd, stdio: "pipe" });
+    execSync("git pull --rebase origin main", { cwd, stdio: "pipe", timeout: 10000 });
     execSync("git add -A", { cwd, stdio: "pipe" });
-    const msg = `memory: ${sessionId} - ${new Date().toISOString()}`;
-    execSync(`git commit -m "${msg}"`, { cwd, stdio: "pipe" });
-    execSync("git push origin main", { cwd, stdio: "pipe" });
+    execSync(`git commit -m "memory: auto-sync ${new Date().toISOString()}"`, {
+      cwd, stdio: "pipe",
+    });
+    execSync("git push origin main", { cwd, stdio: "pipe", timeout: 15000 });
     return true;
   } catch (e) {
-    console.error("[om-memory] git push failed:", e.message);
-    return false;
+    // Silently skip if no changes or network issues
   }
 }
 
-function saveMemory(sessionData) {
-  ensureRepo();
+function addMemory(entry) {
+  ensureDir();
+  const index = loadIndex();
+  index.unshift(entry);
+
+  // Keep last 200 entries max
+  const trimmed = index.slice(0, 200);
+  saveIndex(trimmed);
+
+  // Also save individual file
   const ts = new Date().toISOString().replace(/[:.]/g, "-");
-  const filename = `${ts}_${sessionData.sessionId || "unknown"}.json`;
-  const filePath = path.join(MEMORY_DIR, filename);
+  const filename = `${ts}_${(entry.sessionId || "s").slice(0, 8)}.json`;
+  fs.writeFileSync(path.join(MEMORY_DIR, filename), JSON.stringify(entry, null, 2));
 
-  const entry = {
-    timestamp: new Date().toISOString(),
-    sessionId: sessionData.sessionId || "unknown",
-    sessionFile: sessionData.sessionFile || "",
-    sessionName: sessionData.sessionName || "",
-    type: sessionData.type || "compaction",
-    summary: sessionData.summary || "",
-    tokensBefore: sessionData.tokensBefore || 0,
-    tokensAfter: sessionData.estimatedTokensAfter || 0,
-    model: sessionData.model || null,
-  };
-
-  fs.writeFileSync(filePath, JSON.stringify(entry, null, 2));
-  gitPush(filePath, entry.sessionId);
+  // Attempt git sync (non-blocking)
+  setTimeout(() => gitSync(), 100);
 }
 
-// Pi extension entry point
+function searchMemory(query) {
+  const index = loadIndex();
+  if (!query) return index.slice(0, 10);
+
+  const q = query.toLowerCase();
+  return index
+    .filter((e) => JSON.stringify(e).toLowerCase().includes(q))
+    .slice(0, 20);
+}
+
+function getRecentContext(maxEntries = 5) {
+  const index = loadIndex();
+  return index
+    .filter((e) => e.type === "compaction" || e.type === "snapshot")
+    .slice(0, maxEntries);
+}
+
+// ─── Extension ─────────────────────────────────────────────────────────────
+
 module.exports = function (pi) {
-  // Hook into compaction end
+  let memoryLoaded = false;
+
+  // Register /memory command
+  pi.registerCommand({
+    name: "memory",
+    description: "Search or view pi agent memory",
+    execute: async (ctx) => {
+      const args = ctx.args?.trim() || "";
+      if (args === "recent") {
+        const entries = getRecentContext(5);
+        const lines = ["## Recent Memory", ""];
+        for (const e of entries) {
+          lines.push(
+            `- **${e.type}** (${new Date(e.timestamp).toLocaleString()}): ${(e.summary || "").slice(0, 150)}...`
+          );
+        }
+        ctx.reply(lines.join("\n"));
+      } else if (args === "stats") {
+        const index = loadIndex();
+        const sessions = new Set(index.map((e) => e.sessionId)).size;
+        const compactions = index.filter((e) => e.type === "compaction").length;
+        ctx.reply(
+          `## Memory Stats\n\n- **Total entries:** ${index.length}\n- **Unique sessions:** ${sessions}\n- **Compactions:** ${compactions}\n- **Repo:** [om-memory](https://github.com/vachit-in/om-memory)\n- **Live page:** [vachit-in.github.io/om-memory](https://vachit-in.github.io/om-memory)`
+        );
+      } else if (args) {
+        const results = searchMemory(args);
+        if (results.length === 0) {
+          ctx.reply("No memories found matching your query.");
+        } else {
+          const lines = [`## Memory search: "${args}"`, ""];
+          for (const e of results) {
+            lines.push(
+              `- **${e.type}** [${new Date(e.timestamp).toLocaleString()}] ${(e.summary || "").slice(0, 200)}`
+            );
+          }
+          ctx.reply(lines.join("\n"));
+        }
+      } else {
+        const recent = getRecentContext(5);
+        const lines = [
+          "## Pi Agent Memory",
+          "",
+          "Use `/memory recent` to see recent entries",
+          "Use `/memory stats` for statistics",
+          "Use `/memory <query>` to search",
+          "",
+          "### Recent:",
+        ];
+        for (const e of recent) {
+          lines.push(
+            `- **${e.type}**: ${(e.summary || "").slice(0, 120)}...`
+          );
+        }
+        ctx.reply(lines.join("\n"));
+      }
+    },
+  });
+
+  // Register /save-memory command (manual save)
+  pi.registerCommand({
+    name: "save-memory",
+    description: "Manually save a memory note",
+    execute: async (ctx) => {
+      const text = ctx.args?.trim();
+      if (!text) {
+        ctx.reply("Usage: /save-memory <your note>");
+        return;
+      }
+      const model = pi.agent?.state?.model;
+      addMemory({
+        timestamp: new Date().toISOString(),
+        sessionId: pi.session?.sessionId || "manual",
+        sessionFile: pi.session?.sessionFile || "",
+        type: "manual",
+        summary: text,
+        model: model ? { provider: model.provider, id: model.id } : null,
+      });
+      ctx.reply(`✅ Saved to memory: "${text.slice(0, 100)}..."`);
+    },
+  });
+
+  // Load past context on first agent start
+  pi.on("agent_start", () => {
+    if (memoryLoaded) return;
+    memoryLoaded = true;
+
+    const recent = getRecentContext(3);
+    if (recent.length === 0) return;
+
+    // Inject past context as a system message via a tool call
+    const contextLines = [
+      "\n---",
+      "## Recent Memory (from previous sessions)",
+      "You have access to your memory repo at /Users/om/om-memory.",
+      "Use `/memory` to search past contexts. Use `/save-memory` to persist important info.",
+      "",
+    ];
+    for (const e of recent) {
+      contextLines.push(
+        `[${new Date(e.timestamp).toLocaleString()}] **${e.type}** (session ${(e.sessionId || "").slice(0, 8)}): ${e.summary || ""}`
+      );
+    }
+    contextLines.push("---\n");
+
+    // Store as context that pi can reference
+    pi._memoryContext = contextLines.join("\n");
+  });
+
+  // Auto-save on compaction
   pi.on("compaction_end", (event) => {
     if (!event.result || event.aborted) return;
 
-    const state = pi.agent?.state;
-    const model = state?.model;
-
-    saveMemory({
+    const model = pi.agent?.state?.model;
+    addMemory({
+      timestamp: new Date().toISOString(),
+      sessionId: pi.session?.sessionId || "unknown",
+      sessionFile: pi.session?.sessionFile || "",
       type: "compaction",
-      sessionId: pi.session?.sessionId,
-      sessionFile: pi.session?.sessionFile,
-      sessionName: pi.session?.sessionName,
-      summary: event.result.summary,
-      tokensBefore: event.result.tokensBefore,
-      estimatedTokensAfter: event.result.estimatedTokensAfter,
+      summary: event.result.summary || "",
+      tokensBefore: event.result.tokensBefore || 0,
+      tokensAfter: event.result.estimatedTokensAfter || 0,
       model: model ? { provider: model.provider, id: model.id } : null,
     });
   });
 
-  // Hook into agent_settled to save periodic snapshots
+  // Periodic snapshots
   pi.on("agent_settled", () => {
     const state = pi.agent?.state;
     if (!state) return;
-
     const messages = state.messages || [];
-    if (messages.length < 4) return; // Skip tiny sessions
+    if (messages.length < 4) return;
 
-    // Only save every ~10 messages
-    const lastSaveKey = `__om_memory_last_count`;
+    const lastSaveKey = "__om_memory_last_count";
     const currentCount = messages.length;
     const lastCount = pi[lastSaveKey] || 0;
     if (currentCount - lastCount < 10) return;
     pi[lastSaveKey] = currentCount;
 
-    // Get last assistant text
-    const lastAssistant = [...messages].reverse().find(m => m.role === "assistant");
-    const lastText = lastAssistant?.content?.find(c => c.type === "text")?.text || "";
+    const lastAssistant = [...messages]
+      .reverse()
+      .find((m) => m.role === "assistant");
+    const lastText =
+      lastAssistant?.content?.find((c) => c.type === "text")?.text || "";
 
-    saveMemory({
+    addMemory({
+      timestamp: new Date().toISOString(),
+      sessionId: pi.session?.sessionId || "unknown",
+      sessionFile: pi.session?.sessionFile || "",
       type: "snapshot",
-      sessionId: pi.session?.sessionId,
-      sessionFile: pi.session?.sessionFile,
       summary: lastText.slice(0, 500),
-      model: state.model ? { provider: state.model.provider, id: state.model.id } : null,
+      model: state.model
+        ? { provider: state.model.provider, id: state.model.id }
+        : null,
     });
   });
 };

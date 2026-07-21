@@ -1,0 +1,9 @@
+[
+  {
+    "timestamp": "2026-07-21T18:45:00.000Z",
+    "sessionId": "init",
+    "type": "snapshot",
+    "summary": "Welcome to Om's Pi Agent Memory! This repository stores context from pi coding agent sessions. Use /memory to search, /save-memory to persist notes.",
+    "model": null
+  }
+]

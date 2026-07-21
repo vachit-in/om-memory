@@ -11,8 +11,18 @@ function loadMemories() {
   const entries = [];
   if (!fs.existsSync(MEMORY_DIR)) return entries;
 
+  // Prefer _index.json for faster loading
+  const indexFile = path.join(MEMORY_DIR, "_index.json");
+  if (fs.existsSync(indexFile)) {
+    try {
+      const data = JSON.parse(fs.readFileSync(indexFile, "utf8"));
+      return data;
+    } catch {}
+  }
+
+  // Fallback: load individual files
   for (const file of fs.readdirSync(MEMORY_DIR)) {
-    if (!file.endsWith(".json")) continue;
+    if (!file.endsWith(".json") || file === "_index.json") continue;
     try {
       const data = JSON.parse(
         fs.readFileSync(path.join(MEMORY_DIR, file), "utf8")
