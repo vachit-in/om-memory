@@ -190,6 +190,41 @@ module.exports = function (pi) {
     },
   });
 
+  // Register /switch-whatsapp - hand this session to WhatsApp bot
+  pi.registerCommand({
+    name: "switch-whatsapp",
+    description: "Hand this session over to the WhatsApp bot",
+    execute: async (ctx) => {
+      const sessionFile = pi.session?.sessionFile;
+      if (!sessionFile) {
+        ctx.reply("❌ This session has no file (ephemeral). Cannot switch.");
+        return;
+      }
+      const sessionId = pi.session?.sessionId || "?";
+      const sessionName = pi.session?.sessionName || "unnamed";
+      const model = pi.agent?.state?.model;
+
+      const pointer = {
+        sessionFile,
+        sessionId,
+        sessionName,
+        model: model ? `${model.provider}/${model.id}` : "?",
+        timestamp: new Date().toISOString(),
+      };
+
+      const pointerPath = path.join(MEMORY_REPO, ".whatsapp-session");
+      fs.writeFileSync(pointerPath, JSON.stringify(pointer, null, 2));
+      gitSync();
+
+      ctx.reply(
+        `📲 *Session handed to WhatsApp bot!*\n\n` +
+        `Session: ${sessionName}\n` +
+        `Model: ${pointer.model}\nSession ID: ${sessionId.slice(0, 8)}...\n\n` +
+        `Open WhatsApp and send a message to continue from here.`
+      );
+    },
+  });
+
   // Load past context on first agent start
   pi.on("agent_start", () => {
     if (memoryLoaded) return;
